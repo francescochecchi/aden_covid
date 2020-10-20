@@ -81,14 +81,25 @@
                )
       ts[, "time_piece2"] <- x1
       
+      
   #...................................    
-  ## Prepare datasets
+  ## Prepare main observations dataset
     
     # Add 1 grave or 1 square metre to graves or area observations that equal 0 (so as to enable logging)
     obs[, "graves"] <- ifelse(obs$graves == 0, 1, obs$graves)  
     obs[, "area"] <- ifelse(obs$area == 0, 1, obs$area)  
       
     # Add secondary variables
+      # days since previous observation (image)
+      obs <- obs[order(obs[, "cemetery"], obs[, "date"]), ]
+      x1 <- c()    
+      for (i in sort(unique(obs$cemetery)) ) {
+        x3 <- subset(obs, cemetery == i)
+        x1 <- c(x1, 0, as.integer(diff(x3$date)) )
+          
+      }
+      obs[, "days_since"] <- x1
+
       # starting number of graves (temporary - will be updated after imputation step below)
       x1 <- c()
       for (i in sort(unique(obs$cemetery)) ) {
@@ -111,14 +122,19 @@
       obs[, "new_graves"] <- x1
       obs[, "new_area"] <- x2
       
-
     # Merge dataset with time series
     obs <- merge(ts, obs, by = c("cemetery", "date"), all = TRUE)
     obs[, "date"] <- as.Date(obs$date)
-    
-    # Prepare population denominators and merge them in
+
+    # Factorise variables as needed
+      for (i in colnames(obs)) {
+        if (class(obs[, i]) == "character" ) { obs[, i] <- as.factor(obs[, i])  }
+      }
+        
+  #...................................    
+  ## Prepare population denominators and merge them into observations dataset
       
-      # smooth population across time series
+    # Smooth population across time series
       population[, "date"] <- ymd(paste(population$year, "-", population$month, "-15", sep = "") )
       population <- merge(population, days, by = "date", all.x = TRUE)
       population[, "time_base"] <- as.integer(population$date - date_start)
@@ -129,7 +145,7 @@
       x1 <- data.frame(x1$x, round(x1$y, digits = 0), round(x2$y, digits = 0 ))
       colnames(x1) <- c("time_base", "pop_low", "pop_high")
       
-      # plot population trends
+    # Plot population trends
       x2 <- melt(x1, id = "time_base")
       colnames(x2) <- c("time_base", "series", "population")
       x2[, "estimate"] <- ifelse(x2[, "series"] == "pop_low", "low", "high")
@@ -158,23 +174,115 @@
       plot  
       ggsave("population_over_time.png", width = 18, height = 10, units = "cm", dpi = "print") 
       
-      # calculate annual increases, as a ratio from first value
+    # Calculate annual increases, as a ratio from first value
       x1 <- merge(x1, days, by = "time_base")
       x1[, "increase_low"] <- x1[, "pop_low"] / x1[which.min(x1$date), "pop_low"]
       x1[, "increase_high"] <- x1[, "pop_high"] / x1[which.min(x1$date), "pop_high"]      
 
-      # merge with observations
+    # Merge with observations
       obs <- merge(obs, x1[, c("date", "pop_low", "pop_high", "increase_low", "increase_high")], 
         by = "date", all.x = TRUE)
     
-    # Merge cemetery meta-data with main dataset
-    obs <- merge(obs, cemeteries[, c("cemetery", "cemetery_id", "district", "urban")], by = "cemetery", all.x = TRUE)
+  #...................................    
+  ## Merge cemetery meta-data with main dataset
+    obs <- merge(obs, cemeteries[, c("cemetery", "cemetery_id", "sub_district", "urban")], by = "cemetery", all.x = TRUE)
       # convert cemetery to factor (needed for random effect)
       obs[, "cemetery"] <- as.factor(obs[, "cemetery"])
       obs[, "cemetery_id"] <- as.factor(obs[, "cemetery_id"])
     
-      # factorise variables as needed
-      for (i in colnames(obs)) {
-        if (class(obs[, i]) == "character" ) { obs[, i] <- as.factor(obs[, i])  }
+  #...................................
+  ## Prepare ACLED insecurity data and merge into observations dataset
+
+    # Aggregate by date and sub-district
+    acled[, "events"] <- 1
+    acled_agg <- aggregate(acled[, c("events", "fatalities")], 
+      by = list(date = acled$event_date, sub_district = acled$sub_district) , FUN = sum)
+    
+    # Make sure all dates and sub-districts are featured
+      # starting date of ACLED data is 1 Jan 2015
+      date_acled <- as.Date("1Jan2015", "%d%b%Y")
+    
+    x1 <- expand.grid(sort(unique(cemeteries$sub_district)), seq.Date(date_acled, date_end, by = 1) )
+    colnames(x1) <- c("sub_district", "date")
+    acled_agg <- merge(x1, acled_agg, by = c("sub_district", "date"), all.x = TRUE)
+    
+    # Calculate number of events by date within and outside each sub-district, per day
+      # any NA values = 0
+      acled_agg[is.na(acled_agg)] <- 0
+
+      # sort
+      obs <- obs[order(obs[, "cemetery"], obs[, "date"]), ]
+
+      obs[, "events_in_since"] <- NA
+      obs[, "events_out_since"] <- NA
+      obs[, "fatalities_in_since"] <- NA
+      obs[, "fatalities_out_since"] <- NA
+      
+      # for each observation...
+      for (i in 1:nrow(obs)) {
+        x1 <- obs[i, "sub_district"]
+        x2 <- obs[i, "date"]
+        x3 <- as.integer(obs[i, "days_since"])
+        
+        # events and fatalities in and out of the sub-district that day
+        obs[i, "events_in"] <- acled_agg[acled_agg$sub_district == x1 & acled_agg$date == x2, "events"]
+        obs[i, "events_out"] <- sum(acled_agg[acled_agg$sub_district != x1 & acled_agg$date == x2, "events"])
+        obs[i, "fatalities_in"] <- acled_agg[acled_agg$sub_district == x1 & acled_agg$date == x2, "fatalities"]
+        obs[i, "fatalities_out"] <- sum(acled_agg[acled_agg$sub_district != x1 & acled_agg$date == x2, "fatalities"])
+        
+        # cumulative events and fatalities since previous image (only if the date has an observation)
+        if (! is.na(x3) ) {
+          # if this is the first image...
+          if (x3 == 0) {
+            x4 <- seq.Date(date_acled, x2, by = 1)
+            obs[i, "events_in_since"] <- sum(acled_agg[acled_agg$sub_district == x1 & acled_agg$date %in% x4, "events"])
+            obs[i, "events_out_since"] <- sum(acled_agg[acled_agg$sub_district != x1 & acled_agg$date %in% x4, "events"])
+            obs[i, "fatalities_in_since"] <- sum(acled_agg[acled_agg$sub_district == x1 & acled_agg$date %in% x4, "fatalities"])
+            obs[i, "fatalities_out_since"] <- sum(acled_agg[acled_agg$sub_district != x1 & acled_agg$date %in% x4, "fatalities"])
+         
+          }
+          
+          # otherwise...
+          if (x3 > 0) {
+            obs[i, "events_in_since"] <- sum(obs[(i-x3):i, "events_in"])
+            obs[i, "events_out_since"] <- sum(obs[(i-x3):i, "events_out"])
+            obs[i, "fatalities_in_since"] <- sum(obs[(i-x3):i, "fatalities_in"])
+            obs[i, "fatalities_out_since"] <- sum(obs[(i-x3):i, "fatalities_out"])
+            
+          }
+        }
+        
       }
     
+    # Also calculate average daily rates since previous image
+      obs[, c("events_in_since_rate", "events_out_since_rate", "fatalities_in_since_rate", "fatalities_out_since_rate")] <-
+        obs[, c("events_in_since", "events_out_since", "fatalities_in_since", "fatalities_out_since")] / obs[, "days_since"]
+      # fix rates for first observation
+      for (i in 1:nrow(obs)) {
+        if (! is.na(obs[i, "days_since"]) &  obs[i, "days_since"] == 0) {
+          obs[i, c("events_in_since_rate", "events_out_since_rate", "fatalities_in_since_rate", "fatalities_out_since_rate")] <-
+           obs[i, c("events_in_since", "events_out_since", "fatalities_in_since", "fatalities_out_since")] / 
+            as.integer(obs[i, "date"] - date_acled)
+
+        }
+      }
+      
+    # Calculate rolling weekly means of events and fatalities
+      
+      # prepare data
+      x1 <- c("events_in", "events_out", "fatalities_in", "fatalities_out")
+      x2 <- paste(x1, "_roll", sep="")
+      obs <- obs[order(obs[, "cemetery"], obs[, "date"]), ]
+      obs[, x2] <- NA
+      
+      # for each cemetery...
+      for (i in sort(unique(obs$cemetery))) {
+        # observations from the cemetery...
+        x3 <- subset(obs, cemetery == i)[, x1]
+        # for each variable...
+        for (j in 1:length(x1) ) { 
+          # rolling mean
+          obs[obs$cemetery == i, x2[j] ] <- rollmean(x3[, x1[j] ], roll, fill = NA, align = "right" )
+        }
+      }
+

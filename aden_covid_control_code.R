@@ -52,6 +52,9 @@
 #.........................................................................................
 ### Specify parameters
     
+    # Time window for rolling means of insecurity events (in days)
+    roll <- 28
+        
     # Candidate dates at which baseline period ends and epidemic epidemic period begins
     date_knot_options <- as.Date(c("1Feb2020", "1Mar2020", "1Apr2020"), "%d%b%Y")
       
@@ -85,12 +88,12 @@ source("aden_covid_bespoke_functions.R")
   #...................................      
   ## Read in all the datasets needed
     # which datasets
-    x1 <- c("obs", "cemeteries", "population", "civil_registry_monthly", "civil_registry_weekly")
+    x1 <- c("obs", "cemeteries", "population", "acled", "civil_registry_monthly", "civil_registry_weekly")
     
     # for each dataset...
     for (i in x1) {
       # read in
-      assign(i, read_excel("aden_satellite_cemetery_data.xlsx", sheet = i) )
+      assign(i, read_excel("aden_covid_data.xlsx", sheet = i) )
         # remove tibble nonsense
         assign(i, as.data.frame(get(i)) )
       # only keep needed columns
@@ -147,14 +150,14 @@ source("aden_covid_impute_graves.R")
                     plot.margin = unit(c(0.5,2,0.5,0.5), "cm")
                     )
       plot
-      ggsave("burials_over_time.png", width = 18, height = 18, units = "cm", dpi = "screen")    
+      ggsave("burials_over_time.png", width = 18, height = 18, units = "cm", dpi = "print")    
 
    
   #...................................   
-  ## Plot trends in burial rate over time, by period and cemetery
+  ## Plot trends in burial rate over time, by cemetery
     # Preparatory steps
       # data needed
-      x1 <- obs[is.na(obs$graves) == FALSE, c("date", "cemetery", "graves", "period_covid")]
+      x1 <- obs[is.na(obs$graves) == FALSE, c("date", "cemetery", "graves")]
       
       # generate burial rate since the previous observation
       x1 <- x1[order(x1[, "cemetery"], x1[, "date"]), ]
@@ -167,13 +170,11 @@ source("aden_covid_impute_graves.R")
 
       x1[, "burial_rate"] <- x2
       
-      # lag burial rate and period so as to prepare data for step graph
+      # lag burial rate so as to prepare data for step graph
       x2 <- c()
-      x3 <- c()
       for (i in sort(unique(x1$cemetery) ) ) {
         x4 <- subset(x1, cemetery == i)
         x2 <- c(x2, x4[-1, "burial_rate"], NA)  
-        x3 <- c(x3, as.character(x4[-1, "period_covid"]), as.character(x4[nrow(x4), "period_covid"]) )
       }
 
       x1[, "burial_rate_lag"] <- x2
@@ -182,19 +183,14 @@ source("aden_covid_impute_graves.R")
       
     # Draw plot
       plot <- ggplot(x1, aes(x = date, y = burial_rate_lag) ) +
-              geom_step(linetype = "dashed", size = 0.7,  colour = brewer_pal(palette = "Dark2")(2)[2] ) +
-              geom_step(aes(colour = period_covid), size = 1 ) +
-              scale_colour_manual(values = brewer_pal(palette = "Dark2")(2)) +
+              geom_step(size = 1, colour = brewer_pal(palette = "Dark2")(2)[1] ) +
+              annotate(geom = "rect", xmin = date_knot, xmax = max(x1$date), ymin = 0, ymax = Inf,
+                fill = brewer_pal(palette = "Reds")(9)[6], alpha = 0.3) +
               scale_y_continuous("mean new graves per day", limits = c(0, NA) ) +
               theme_bw() +
               facet_wrap(~cemetery, ncol=2, scales = "free_y") +
-              guides(fill = FALSE) +
-              theme(legend.position="bottom", legend.direction="horizontal") +
               scale_x_date("", minor_breaks=NULL, date_breaks="4 months", date_labels = "%b-%Y" ) +
-              labs(colour = "Period:  ") +
-              theme(legend.title = element_text(color="grey20", size=11),
-                    strip.text.x = element_text(color="grey20", size=11),
-                    legend.text = element_text(color="grey20", size=11),
+              theme(strip.text.x = element_text(color="grey20", size=11),
                     axis.title.x = element_text(color="grey20", size=11), 
                     axis.text.x = element_text(color = "grey20", size=10, angle=315, hjust=0, vjust=0),               
                     axis.line.y = element_line(color = "grey20"),
@@ -217,12 +213,12 @@ source("aden_covid_impute_graves.R")
       colnames(out_descr) <- "cemetery" 
       
       # statistics for each cemetery...
-      out_descr[, c("sub-district", "n_obs", "start_date", "end_date", "graves_start", "graves_end", "area_start", "area_end")] <- NA
+      out_descr[, c("sub_district", "n_obs", "start_date", "end_date", "graves_start", "graves_end", "area_start", "area_end")] <- NA
       for (i in 1:length(out_descr$cemetery) ) {
         # select data
         x1 <- subset(obs, is.na(graves) == FALSE & cemetery == out_descr[i, "cemetery"] )
-        # sub-district
-        out_descr[i, "sub-district"] <- unique(as.character(x1$district) )
+        # sub_district
+        out_descr[i, "sub_district"] <- unique(as.character(x1$sub_district) )
         # number of observations per cemetery
         out_descr[i, "n_obs"] <- nrow(x1)
         # start date
@@ -241,7 +237,7 @@ source("aden_covid_impute_graves.R")
     # Save
       out_descr[, "start_date"] <- as.Date(out_descr[, "start_date"])
       out_descr[, "end_date"] <- as.Date(out_descr[, "end_date"])
-      out_descr[, "sub-district"] <- as.factor(out_descr[, "sub-district"])
+      out_descr[, "sub_district"] <- as.factor(out_descr[, "sub_district"])
       write.csv(out_descr, "out_table_description_cemeteries.csv", row.names = FALSE)
     
 
@@ -258,7 +254,7 @@ source("aden_covid_gamlss_model.R")
            
                 
 #.........................................................................................                            
-### Comparing estimates with Aden Civil Registry (CR) data
+### Comparing estimates with Aden Civil Registry (CR) data (for brevity - only for model without conflict intensity)
 
   #...................................   
   ## Comparison by month
