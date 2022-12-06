@@ -1,4 +1,5 @@
 # Excess mortality during the COVID-19 pandemic: a geospatial and statistical analysis in Aden governorate, Yemen
+Koum Besson et al. (2021) https://gh.bmj.com/content/6/3/e004564.long 
 
 # Notes on data and R analysis code
 6 October 2020  
